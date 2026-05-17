@@ -241,8 +241,9 @@ class SettingsDialog:
         self.result = None
         self.top = tk.Toplevel(parent)
         self.top.title("Settings / 设置")
-        self.top.geometry("520x540")
-        self.top.resizable(False, False)
+        self.top.geometry("520x600")
+        self.top.minsize(400, 400)
+        self.top.resizable(True, True)
         self.top.transient(parent)
         self.top.grab_set()
 
@@ -250,8 +251,41 @@ class SettingsDialog:
         self._load_values()
 
     def _build(self):
-        frame = ttk.Frame(self.top, padding=12)
-        frame.pack(fill=tk.BOTH, expand=True)
+        # Outer container
+        outer = ttk.Frame(self.top)
+        outer.pack(fill=tk.BOTH, expand=True)
+        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+
+        # Canvas + Scrollbar for scrollable content
+        canvas = tk.Canvas(outer, bg="#1e1e1e", highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        # Inner frame — all widgets go here
+        frame = ttk.Frame(canvas, padding=12)
+        frame.columnconfigure(1, weight=1)
+        frame_id = canvas.create_window((0, 0), window=frame, anchor=tk.NW)
+
+        def _on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        frame.bind("<Configure>", _on_frame_configure)
+
+        def _on_canvas_configure(event):
+            canvas.itemconfig(frame_id, width=event.width)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        # Mouse wheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        # Unbind when dialog is destroyed to avoid affecting other windows
+        def _on_destroy(event):
+            canvas.unbind_all("<MouseWheel>")
+        self.top.bind("<Destroy>", _on_destroy)
 
         row = 0
         ttk.Label(frame, text="API Endpoint / API 地址:").grid(row=row, column=0, sticky=tk.W, pady=4)
@@ -267,6 +301,42 @@ class SettingsDialog:
         ttk.Label(frame, text="Model / 模型:").grid(row=row, column=0, sticky=tk.W, pady=4)
         self.model_entry = ttk.Entry(frame, width=55)
         self.model_entry.grid(row=row, column=1, sticky=tk.EW, pady=4)
+        row += 1
+
+        # --- Manual Send Hotkeys ---
+        sep = ttk.Separator(frame, orient=tk.HORIZONTAL)
+        sep.grid(row=row, column=0, columnspan=2, sticky=tk.EW, pady=(12, 4))
+        row += 1
+
+        ttk.Label(frame, text="发送热键说明：翻译完成后，按复制键复制文本，再按发送键确认",
+                  foreground="#888888", font=("Microsoft YaHei", 8)).grid(
+            row=row, column=0, columnspan=2, sticky=tk.W, pady=(0, 8))
+        row += 1
+
+        ttk.Label(frame, text="Copy Hotkey / 复制热键:").grid(row=row, column=0, sticky=tk.W, pady=4)
+        self.copy_cap = HotkeyCapture(frame, self.cfg.copy_hotkey)
+        self.copy_cap.grid(row=row, column=1, sticky=tk.W, pady=4)
+        row += 1
+
+
+        ttk.Label(frame, text="Send Hotkey / 发送热键 (Enter):").grid(row=row, column=0, sticky=tk.W, pady=4)
+        self.enter_cap = HotkeyCapture(frame, self.cfg.enter_hotkey)
+        self.enter_cap.grid(row=row, column=1, sticky=tk.W, pady=4)
+        row += 1
+
+        ttk.Label(frame, text="Focus Key / 呼出输入框热键:").grid(row=row, column=0, sticky=tk.W, pady=4)
+        self.focus_cap = HotkeyCapture(frame, self.cfg.send_hotkey)
+        self.focus_cap.grid(row=row, column=1, sticky=tk.W, pady=4)
+        row += 1
+
+        warning_label = tk.Label(frame,
+            text="注意：绑定按键要锁定大写！按下组合键进行捕获",
+            fg="#f44747", font=("Microsoft YaHei", 9, "bold"), anchor=tk.W)
+        warning_label.grid(row=row, column=1, sticky=tk.W, pady=(0, 0))
+        row += 1
+
+        sep2 = ttk.Separator(frame, orient=tk.HORIZONTAL)
+        sep2.grid(row=row, column=0, columnspan=2, sticky=tk.EW, pady=(12, 4))
         row += 1
 
         ttk.Label(frame, text="Window Opacity / 窗口透明度 (0.1-1.0):").grid(row=row, column=0, sticky=tk.W, pady=4)
@@ -304,22 +374,6 @@ class SettingsDialog:
                         text="Click-through / 鼠标穿透 (仅悬浮模式)",
                         variable=self.click_var)
         self.click_cb.grid(row=row, column=0, columnspan=2, sticky=tk.W, pady=4)
-        row += 1
-
-        ttk.Label(frame, text="Game Chat Key / 游戏聊天键:").grid(row=row, column=0, sticky=tk.W, pady=4)
-        self.hotkey_cap = HotkeyCapture(frame, self.cfg.chat_hotkey)
-        self.hotkey_cap.grid(row=row, column=1, sticky=tk.W, pady=4)
-        row += 1
-
-        ttk.Label(frame, text="Focus Key / 呼出输入框热键:").grid(row=row, column=0, sticky=tk.W, pady=4)
-        self.focus_cap = HotkeyCapture(frame, self.cfg.send_hotkey)
-        self.focus_cap.grid(row=row, column=1, sticky=tk.W, pady=4)
-        row += 1
-
-        warning_label = tk.Label(frame,
-            text="注意：绑定按键要锁定大写！",
-            fg="#f44747", font=("Microsoft YaHei", 9, "bold"), anchor=tk.W)
-        warning_label.grid(row=row, column=1, sticky=tk.W, pady=(0, 0))
         row += 1
 
         # Buttons
@@ -375,7 +429,8 @@ class SettingsDialog:
             api_model=self.model_entry.get().strip(),
             system_prompt=self.cfg.system_prompt,
             player_name=self.name_entry.get().strip(),
-            chat_hotkey=self.hotkey_cap.get().strip().lower() or "y",
+            copy_hotkey=self.copy_cap.get().strip().lower() or "ctrl+c",
+            enter_hotkey=self.enter_cap.get().strip().lower() or "enter",
             send_hotkey=self.focus_cap.get().strip().lower() or "shift+y",
             window_opacity=float(self.opacity_scale.get()),
             font_size=int(self.font_spin.get()),

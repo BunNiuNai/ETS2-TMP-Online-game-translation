@@ -9,6 +9,8 @@ import tempfile
 import winreg
 from dataclasses import dataclass, asdict
 
+VERSION = "v1.0.2"
+
 
 def get_documents_path():
     """Get the user's Documents folder from Windows registry.
@@ -76,8 +78,11 @@ class AppConfig:
     win_y: int = -1  # saved window y
     win_w: int = 620  # saved window width
     win_h: int = 360  # saved window height
-    chat_hotkey: str = "y"  # hotkey to open in-game chat window
-    send_hotkey: str = "shift+y"  # global hotkey to focus translator input
+    chat_hotkey: str = "y"      # hotkey to open in-game chat window
+    copy_hotkey: str = "ctrl+c"  # hotkey to copy translated text to clipboard
+    paste_hotkey: str = "ctrl+v" # hotkey to paste (Ctrl+V) into game
+    enter_hotkey: str = "enter"  # hotkey to press Enter in game
+    send_hotkey: str = "shift+y" # global hotkey to focus translator input
 
 
 def ensure_config_dir():

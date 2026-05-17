@@ -4,12 +4,23 @@ Translation display window - supports two modes:
   - "overlay": borderless transparent overlay with optional click-through
 """
 import ctypes
+import os
 import time
 import tkinter as tk
+from datetime import datetime
 from queue import Queue, Empty
 from tkinter import ttk
 
-from config import AppConfig
+from config import AppConfig, VERSION
+
+# ---- debug log (temporary) ----
+def _debug_log(msg: str):
+    try:
+        log_path = os.path.join(os.environ.get("TEMP", "."), "ets2_translator_debug.log")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]} [{os.getpid()}] {msg}\n")
+    except Exception:
+        pass
 
 # Win32 constants
 GWL_EXSTYLE = -20
@@ -34,7 +45,7 @@ class OverlayWindow:
         self.queue = message_queue
         self.stats_ref = stats_ref or {}
         self.root = tk.Tk()
-        self.root.title("ETS2 聊天翻译器（开源）")
+        self.root.title(f"ETS2 聊天翻译器 {VERSION}")
         self.root.configure(bg=BG)
         self._messages = []
         self._displayed_count = 0  # how many messages are currently shown
@@ -59,7 +70,7 @@ class OverlayWindow:
         # Title bar (only visible in overlay mode, used as drag handle)
         self.title_bar = tk.Frame(self.outer, bg="#181818", height=22, cursor="fleur")
         self.title_label = tk.Label(
-            self.title_bar, text=" ETS2 聊天翻译器（开源）",
+            self.title_bar, text=f" ETS2 聊天翻译器 {VERSION}",
             bg="#181818", fg="#666666", font=("Microsoft YaHei", 9), anchor=tk.W
         )
         self.title_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -87,15 +98,13 @@ class OverlayWindow:
         )
         self.stats_label.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # Input area (packed second, always at very bottom)
-        self.input_frame = tk.Frame(self.outer, bg=BG, height=36)
+        # Input area (packed second, auto-sizes to fit children)
+        self.input_frame = tk.Frame(self.outer, bg=BG)
         self.input_frame.pack(side=tk.BOTTOM, fill=tk.X)
-        self.input_frame.pack_propagate(False)
 
         # Entry row
         self.entry_row = tk.Frame(self.input_frame, bg=BG, height=32)
         self.entry_row.pack(fill=tk.X, padx=4, pady=(1, 3))
-        self.entry_row.pack_propagate(False)
         self.send_entry = tk.Entry(
             self.entry_row, font=("Microsoft YaHei", self.cfg.font_size),
             bg="#1a1a1a", fg=FG, insertbackground=FG,
@@ -109,14 +118,16 @@ class OverlayWindow:
         )
         self.send_hint.pack(side=tk.RIGHT, padx=(4, 0))
         self.send_entry.bind("<Return>", self._on_send_enter)
-        self.send_entry.bind("<Escape>", lambda e: self._cancel_send() if self._sending else None)
+        self.send_entry.bind("<Escape>", lambda e: (
+            self.send_entry.delete(0, tk.END), self._update_hotkey_hint()
+        ))
         self.send_entry.bind("<FocusIn>", lambda e: self.send_hint.config(text=" 输入中文 "))
         self.send_entry.bind("<FocusOut>", lambda e: self._update_hotkey_hint())
 
         # Countdown frame (shown during send countdown, hidden otherwise)
         self.countdown_frame = tk.Frame(self.input_frame, bg=BG, height=28)
         self.countdown_label = tk.Label(
-            self.countdown_frame, text="", bg=BG, fg="#dcdcaa",
+            self.countdown_frame, text="", bg=BG, fg="#f44747",
             font=("Microsoft YaHei", 10),
         )
         self.countdown_label.pack(side=tk.LEFT, padx=6)
@@ -125,7 +136,9 @@ class OverlayWindow:
             font=("Microsoft YaHei", 9), cursor="hand2",
         )
         self.countdown_cancel.pack(side=tk.RIGHT, padx=6)
-        self.countdown_cancel.bind("<Button-1>", lambda e: self._cancel_send())
+        self.countdown_cancel.bind("<Button-1>", lambda e: (
+            self.send_entry.delete(0, tk.END), self._update_hotkey_hint()
+        ))
 
         # Sending state
         self._sending = False
@@ -585,10 +598,10 @@ class OverlayWindow:
         self.send_hint.config(text=" 翻译中... ", fg="#cccccc")
 
         import threading
-        threading.Thread(target=self._do_translate_and_countdown, args=(text,), daemon=True).start()
+        threading.Thread(target=self._do_translate, args=(text,), daemon=True).start()
         return "break"
 
-    def _do_translate_and_countdown(self, chinese_text: str):
+    def _do_translate(self, chinese_text: str):
         from translator import translate_to_english
 
         try:
@@ -600,79 +613,133 @@ class OverlayWindow:
         self.root.after(0, lambda: self._on_translate_done(chinese_text, english))
 
     def _on_translate_done(self, chinese: str, english: str):
-        """Called on main thread after translation completes — set clipboard, start countdown."""
+        """Translation finished — put result in the entry box for manual send."""
         self._pending_chinese = chinese
         self._pending_english = english
-        # Save current clipboard content before overwriting
-        try:
-            self._old_clipboard = self.root.clipboard_get()
-        except Exception:
-            self._old_clipboard = ""
-        # Set translated text to clipboard (Tkinter on main thread = reliable)
-        self.root.clipboard_clear()
-        self.root.clipboard_append(english)
-        self._start_countdown(3)
+        self._sending = False
+        self.send_entry.config(state=tk.NORMAL)
+        self.send_entry.delete(0, tk.END)
+        self.send_entry.insert(0, english)
+        self.send_entry.select_range(0, tk.END)
+        self.send_entry.icursor(tk.END)
+        self.send_hint.config(text=" 翻译完成 | 用热键手动发送 ", fg="#4ec9b0")
+        self._start_manual_send_poller()
 
     def _on_translate_error(self, error: str):
         self._sending = False
-        self._hide_countdown()
         self.send_entry.config(state=tk.NORMAL)
         self.send_hint.config(text=" 翻译失败 ", fg="#f44747")
         self.root.after(5000, lambda: self._update_hotkey_hint())
         self.add_message("System", "发送翻译失败", error, is_self=True)
 
-    # ----- countdown & send -----
+    # ----- manual send hotkeys -----
+    _SPECIAL_VK = {
+        "enter": 0x0D, "return": 0x0D,
+        "esc": 0x1B, "escape": 0x1B,
+        "tab": 0x09, "space": 0x20,
+        "backspace": 0x08, "bs": 0x08,
+        "delete": 0x2E, "del": 0x2E,
+        "home": 0x24, "end": 0x23,
+        "pgup": 0x21, "pgdn": 0x22,
+        "left": 0x25, "right": 0x27, "up": 0x26, "down": 0x28,
+        "insert": 0x2D, "ins": 0x2D,
+        "f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73,
+        "f5": 0x74, "f6": 0x75, "f7": 0x76, "f8": 0x77,
+        "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
+    }
+
+    def _parse_hotkey_vk(self, hotkey_str: str) -> tuple[int, int]:
+        """Parse hotkey string into (mods_mask, vk_code). Supports special keys."""
+        parts = hotkey_str.lower().strip().split("+")
+        mods = 0
+        for p in parts[:-1]:
+            p = p.strip()
+            if p in ("shift", "shft"): mods |= MOD_SHIFT
+            elif p in ("ctrl", "control"): mods |= MOD_CONTROL
+            elif p in ("alt"): mods |= MOD_ALT
+        key = parts[-1].strip()
+        if key in self._SPECIAL_VK:
+            vk = self._SPECIAL_VK[key]
+        elif len(key) == 1:
+            vk = ord(key.upper())
+        else:
+            vk = 0
+        return mods, vk
+
+    def _mod_vks(self, mods: int) -> list[int]:
+        """Convert MOD_* flags to VK codes for GetAsyncKeyState."""
+        vks = []
+        if mods & MOD_SHIFT: vks.append(0x10)
+        if mods & MOD_CONTROL: vks.append(0x11)
+        if mods & MOD_ALT: vks.append(0x12)
+        return vks
+
+    def _start_manual_send_poller(self):
+        """Background thread polls hotkeys: copy (detect only) and enter (mark sent)."""
+        if getattr(self, '_manual_poller_active', False):
+            return
+        self._manual_poller_active = True
+
+        import threading
+        from ctypes import windll
+
+        copy_mods, copy_vk = self._parse_hotkey_vk(self.cfg.copy_hotkey)
+        enter_mods, enter_vk = self._parse_hotkey_vk(self.cfg.enter_hotkey)
+
+        def held(vk_code): return windll.user32.GetAsyncKeyState(vk_code) & 0x8000
+
+        def check(mods, vk):
+            if vk == 0:
+                return False
+            mv = self._mod_vks(mods)
+            return all(held(mv) for mv in mv) and held(vk)
+
+        was_copy = was_enter = False
+
+        def poller():
+            nonlocal was_copy, was_enter
+            while getattr(self, '_manual_poller_active', False):
+                cd = check(copy_mods, copy_vk)
+                ed = check(enter_mods, enter_vk)
+
+                if cd and not was_copy:
+                    self.root.after(0, self._on_copy_hotkey)
+                if ed and not was_enter:
+                    self.root.after(0, self._on_enter_hotkey)
+
+                was_copy, was_enter = cd, ed
+                threading.Event().wait(0.05)
+
+        t = threading.Thread(target=poller, daemon=True)
+        t.start()
+
+    def _stop_manual_send_poller(self):
+        self._manual_poller_active = False
+
+    def _on_copy_hotkey(self):
+        """Detected user pressed copy hotkey — system already copied the text."""
+        if not self._pending_english:
+            return
+        self.send_hint.config(text=" 已复制到剪贴板 ", fg="#4ec9b0")
+        self.root.after(1500, lambda: self.send_hint.config(
+            text=" 翻译完成 | 用热键手动发送 ", fg="#4ec9b0"))
+
+    def _on_enter_hotkey(self):
+        """Detected user pressed enter hotkey — message was sent."""
+        self._stop_manual_send_poller()
+        self._insert_sent(self._pending_chinese, self._pending_english)
+        self.send_hint.config(text=" 已发送 ", fg="#4ec9b0")
+        self.root.after(2000, lambda: (
+            self.send_entry.delete(0, tk.END),
+            self._update_hotkey_hint()
+        ))
+
+    # ----- countdown frame (kept for layout, hidden by default) -----
     def _show_countdown(self):
         self.countdown_frame.pack(fill=tk.X, padx=4, pady=(0, 3))
 
     def _hide_countdown(self):
         self.countdown_frame.pack_forget()
-
-    def _cancel_send(self):
-        if not self._sending:
-            return
-        self._sending = False
-        self._hide_countdown()
-        self.send_entry.config(state=tk.NORMAL)
-        self.send_entry.delete(0, tk.END)
-        self._update_hotkey_hint()
-        self._focus_send_entry()
-
-    def _start_countdown(self, seconds: int = 3):
-        self._show_countdown()
-        self._tick_countdown(seconds)
-
-    def _tick_countdown(self, remaining: int):
-        if not self._sending:
-            return
-        if remaining <= 0:
-            self._execute_send()
-            return
-        self.countdown_label.config(text=f" 大模型翻译完成等待 ({remaining}) ")
-        self.root.after(1000, lambda: self._tick_countdown(remaining - 1))
-
-    def _execute_send(self):
-        from input_sender import run_send_sequence
-        self.countdown_label.config(text=" 发送中... ")
-        run_send_sequence(self._pending_english, self.cfg.chat_hotkey)
-        # Wait 2.5s for the full send sequence to complete before cleaning up UI.
-        # Send sequence: press Y → 0.5s → press Y → 0.5s → Ctrl+V → 0.2s → Enter (~1.75s total).
-        # Do NOT call _focus_send_entry() here — it would steal focus from the game.
-        self.root.after(2500, lambda: self._on_send_done())
-
-    def _on_send_done(self):
-        self._sending = False
-        self._hide_countdown()
-        self.send_entry.config(state=tk.NORMAL)
-        self._update_hotkey_hint()
-        self._insert_sent(self._pending_chinese, self._pending_english)
-        # Restore original clipboard after send is complete
-        try:
-            if self._old_clipboard:
-                self.root.clipboard_clear()
-                self.root.clipboard_append(self._old_clipboard)
-        except Exception:
-            pass
 
     def _insert_sent(self, chinese: str, english: str):
         """Display a sent message in the chat window."""
