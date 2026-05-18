@@ -5,9 +5,9 @@
 Euro Truck Simulator 2 / TruckersMP 联机聊天实时翻译工具。自动将多国语言聊天消息翻译为简体中文，以半透明悬浮窗口显示在游戏中。支持中文输入 → 翻译为英文 → 手动使用热键发送到游戏聊天。
 
 可以访问这个链接直接下载exe文件。https://github.com/BunNiuNai/ets2-translator/releases
-大模型推荐使用硅基流动
-硅基流动网址：https://siliconflow.cn/
-大模型选择：Qwen/Qwen2.5-7B-Instruct
+“大模型推荐使用硅基流动”
+“硅基流动网址：https://siliconflow.cn/”
+“大模型选择：Qwen/Qwen2.5-7B-Instruct”
 - 永久免费、不限流、不限并发（个人用户随便用）
 ​
 - 通义千问小模型，翻译快、准
