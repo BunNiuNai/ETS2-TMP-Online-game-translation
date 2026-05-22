@@ -10,7 +10,9 @@ from tkinter import ttk
 from config import AppConfig, load_config, save_config, CONFIG_PATH, DOCUMENTS_PATH
 from monitor import ChatMonitor, CHAT_LOG_DIR, log_dir_status
 from overlay import OverlayWindow
-from translator import Translator, test_connection
+from translator import Translator, test_connection, test_baidu_connection
+from config import VERSION
+import update as updater
 
 class App:
     def __init__(self):
@@ -32,6 +34,7 @@ class App:
         self.overlay._settings_cb = self._open_settings
         self.overlay._switch_mode_cb = self._switch_mode
         self.overlay._exit_cb = self._shutdown
+        self.overlay._check_update_cb = lambda: self._check_for_update(auto_download=True)
 
         # Tray icon
         self.tray = None
@@ -43,6 +46,9 @@ class App:
 
         # Show startup status
         self.overlay.root.after(300, self._startup_status)
+
+        # Check for updates (background)
+        self.overlay.root.after(1500, self._check_for_update)
 
         # Persist auto-detected player name
         self.overlay.root.after(500, self._check_self_name)
@@ -71,15 +77,24 @@ class App:
         )
 
     def _startup_check(self):
-        """Run connectivity test on startup if API key is configured."""
-        if not self.cfg.api_key:
-            return
+        """Run connectivity test on startup if credentials are configured."""
         threading.Thread(target=self._do_startup_check, daemon=True).start()
 
     def _do_startup_check(self):
-        ok, msg = test_connection(
-            self.cfg.api_endpoint, self.cfg.api_key, self.cfg.api_model
-        )
+        backend = self.cfg.translation_backend
+        if backend == "baidu":
+            ok, msg = test_baidu_connection(self.cfg.baidu_appid, self.cfg.baidu_secret)
+        elif backend == "llm+baidu":
+            ok1, msg1 = test_connection(
+                self.cfg.api_endpoint, self.cfg.api_key, self.cfg.api_model
+            )
+            ok2, msg2 = test_baidu_connection(self.cfg.baidu_appid, self.cfg.baidu_secret)
+            ok = ok1 and ok2
+            msg = f"LLM: {msg1}\n百度: {msg2}"
+        else:
+            ok, msg = test_connection(
+                self.cfg.api_endpoint, self.cfg.api_key, self.cfg.api_model
+            )
         if ok:
             self.overlay.root.after(0, lambda: self.overlay.add_message(
                 "System", "API 连通性测试", msg, is_self=True
@@ -137,6 +152,96 @@ class App:
         self.overlay.hide()
 
     def _shutdown(self):
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        self.overlay._save_position()
+        save_config(self.cfg)
+        if self.tray:
+            self.tray.stop()
+            self.tray = None
+        self.monitor.stop()
+        self.translator.stop()
+        import time
+        time.sleep(0.2)
+        self.overlay.root.destroy()
+
+    def _check_for_update(self, auto_download=False):
+        """Check GitHub for new releases in background thread.
+        If auto_download=True and update found, start download immediately."""
+        self.overlay.add_message(
+            "System", "正在检查更新...", f"当前版本: {VERSION}", is_self=True
+        )
+
+        def _do_check():
+            has_update, latest, url = updater.check_for_update()
+            if has_update:
+                if auto_download:
+                    self.overlay.root.after(0, lambda: self._start_update(url, latest))
+                else:
+                    self.overlay.root.after(0, lambda: self.overlay.add_message(
+                        "System",
+                        f"发现新版本 {latest}！",
+                        f"当前 {VERSION} → 最新 {latest}\n右键菜单 → 检查更新 即可自动下载更新",
+                        is_self=True
+                    ))
+            elif latest:
+                self.overlay.root.after(0, lambda: self.overlay.add_message(
+                    "System", f"已是最新版本 {latest}", f"当前版本: {VERSION}", is_self=True
+                ))
+            else:
+                self.overlay.root.after(0, lambda: self.overlay.add_message(
+                    "System", "更新检查失败", "无法连接到 GitHub，请检查网络", is_self=True
+                ))
+
+        threading.Thread(target=_do_check, daemon=True).start()
+
+    def _start_update(self, url=None, latest=None):
+        """Download and apply update, with progress shown in overlay."""
+        if not url:
+            has_update, latest, url = updater.check_for_update()
+            if not has_update:
+                self.overlay.add_message(
+                    "System", f"已是最新版本 {latest}", "无需更新", is_self=True
+                )
+                return
+
+        self.overlay.add_message(
+            "System", f"开始下载 {latest or ''} ...", "下载中 0%", is_self=True
+        )
+
+        def on_progress(pct):
+            if pct < 0:
+                self.overlay.root.after(0, lambda: self.overlay.add_message(
+                    "System", "下载失败", "请检查网络后重试", is_self=True
+                ))
+            else:
+                self.overlay.root.after(0, lambda p=pct: self.overlay._update_last_sys_msg(
+                    f"下载中 {p}%"
+                ))
+
+        def _do_download():
+            new_exe = updater.download_update(url, on_progress)
+            if new_exe:
+                self.overlay.root.after(0, lambda: self.overlay.add_message(
+                    "System", "下载完成，正在更新...",
+                    "应用将在更新后自动重启", is_self=True
+                ))
+                self.overlay.root.after(500, lambda: self._apply_update(new_exe))
+
+        threading.Thread(target=_do_download, daemon=True).start()
+
+    def _apply_update(self, new_exe_path: str):
+        """Replace current exe and restart."""
+        own_path = sys.executable if getattr(sys, 'frozen', False) else sys.argv[0]
+        if not own_path.lower().endswith('.exe'):
+            self.overlay.add_message(
+                "System", "开发模式无法自动更新",
+                "请手动从 GitHub Releases 下载新版本", is_self=True
+            )
+            return
+        updater.apply_update(new_exe_path, own_path)
+        self._shutdown()
         if self._shutting_down:
             return
         self._shutting_down = True
@@ -241,7 +346,7 @@ class SettingsDialog:
         self.result = None
         self.top = tk.Toplevel(parent)
         self.top.title("Settings / 设置")
-        self.top.geometry("520x600")
+        self.top.geometry("520x680")
         self.top.minsize(400, 400)
         self.top.resizable(True, True)
         self.top.transient(parent)
@@ -302,6 +407,32 @@ class SettingsDialog:
         self.model_entry = ttk.Entry(frame, width=55)
         self.model_entry.grid(row=row, column=1, sticky=tk.EW, pady=4)
         row += 1
+
+        # Translation backend selector
+        ttk.Label(frame, text="Backend / 翻译后端:").grid(row=row, column=0, sticky=tk.W, pady=4)
+        self.backend_var = tk.StringVar(value=self.cfg.translation_backend)
+        self.backend_combo = ttk.Combobox(frame, textvariable=self.backend_var,
+                                          values=["llm", "baidu", "llm+baidu"], state="readonly", width=20)
+        self.backend_combo.grid(row=row, column=1, sticky=tk.W, pady=4)
+        self.backend_combo.bind("<<ComboboxSelected>>", self._on_backend_changed)
+        row += 1
+
+        # Baidu settings (shown only when Baidu backend selected)
+        self.baidu_group = ttk.LabelFrame(frame, text="Baidu Translate Settings", padding=8)
+        ttk.Label(self.baidu_group, text="APP ID:").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.baidu_appid_entry = ttk.Entry(self.baidu_group, width=55)
+        self.baidu_appid_entry.grid(row=0, column=1, sticky=tk.EW, pady=2, padx=(8, 0))
+        ttk.Label(self.baidu_group, text="Secret / 密钥:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.baidu_secret_entry = ttk.Entry(self.baidu_group, width=55, show="*")
+        self.baidu_secret_entry.grid(row=1, column=1, sticky=tk.EW, pady=2, padx=(8, 0))
+        ttk.Label(self.baidu_group, text="免费申请: https://fanyi-api.baidu.com/  标准版每月500万字符",
+                  foreground="#888888", font=("Microsoft YaHei", 8)).grid(
+            row=2, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
+        self.baidu_group.columnconfigure(1, weight=1)
+        self.baidu_group.grid(row=row, column=0, columnspan=2, sticky=tk.EW, pady=4)
+        row += 1
+
+        self._on_backend_changed()  # set initial visibility
 
         # --- Manual Send Hotkeys ---
         sep = ttk.Separator(frame, orient=tk.HORIZONTAL)
@@ -390,20 +521,53 @@ class SettingsDialog:
 
         frame.columnconfigure(1, weight=1)
 
-    def _test_connection(self):
-        endpoint = self.ep_entry.get().strip()
-        api_key = self.key_entry.get().strip()
-        model = self.model_entry.get().strip()
+    def _on_backend_changed(self, event=None):
+        """Show/hide settings based on selected translation backend."""
+        backend = self.backend_var.get()
+        if backend in ("baidu", "llm+baidu"):
+            self.baidu_group.grid()
+        else:
+            self.baidu_group.grid_remove()
 
-        if not endpoint or not api_key or not model:
-            self._test_status.config(text="请先填写 API 地址、密钥和模型", foreground="#f44747")
-            return
+    def _test_connection(self):
+        backend = self.backend_var.get()
+        if backend in ("baidu", "llm+baidu"):
+            appid = self.baidu_appid_entry.get().strip()
+            secret = self.baidu_secret_entry.get().strip()
+            if not appid or not secret:
+                self._test_status.config(text="请先填写百度 APP ID 和密钥", foreground="#f44747")
+                return
+        if backend in ("llm", "llm+baidu"):
+            endpoint = self.ep_entry.get().strip()
+            api_key = self.key_entry.get().strip()
+            model = self.model_entry.get().strip()
+            if not endpoint or not api_key or not model:
+                self._test_status.config(text="请先填写 API 地址、密钥和模型", foreground="#f44747")
+                return
 
         self._test_status.config(text="正在测试连接...", foreground="#cccccc")
         self._test_btn.config(state=tk.DISABLED)
 
         def run_test():
-            ok, msg = test_connection(endpoint, api_key, model)
+            if backend == "llm+baidu":
+                ok1, msg1 = test_connection(
+                    self.ep_entry.get().strip(),
+                    self.key_entry.get().strip(),
+                    self.model_entry.get().strip())
+                ok2, msg2 = test_baidu_connection(
+                    self.baidu_appid_entry.get().strip(),
+                    self.baidu_secret_entry.get().strip())
+                ok = ok1 and ok2
+                msg = f"LLM: {msg1}\n百度: {msg2}"
+            elif backend == "baidu":
+                ok, msg = test_baidu_connection(
+                    self.baidu_appid_entry.get().strip(),
+                    self.baidu_secret_entry.get().strip())
+            else:
+                ok, msg = test_connection(
+                    self.ep_entry.get().strip(),
+                    self.key_entry.get().strip(),
+                    self.model_entry.get().strip())
             self.top.after(0, lambda: self._on_test_result(ok, msg))
 
         threading.Thread(target=run_test, daemon=True).start()
@@ -421,6 +585,10 @@ class SettingsDialog:
         self.opacity_scale.set(self.cfg.window_opacity)
         self.font_spin.set(str(self.cfg.font_size))
         self.max_spin.set(str(self.cfg.max_messages))
+        self.backend_var.set(self.cfg.translation_backend)
+        self.baidu_appid_entry.insert(0, self.cfg.baidu_appid)
+        self.baidu_secret_entry.insert(0, self.cfg.baidu_secret)
+        self._on_backend_changed()
 
     def _save(self):
         self.result = AppConfig(
@@ -437,13 +605,28 @@ class SettingsDialog:
             max_messages=int(self.max_spin.get()),
             window_mode=self.mode_var.get(),
             click_through=self.click_var.get(),
+            translation_backend=self.backend_var.get(),
+            baidu_appid=self.baidu_appid_entry.get().strip(),
+            baidu_secret=self.baidu_secret_entry.get().strip(),
         )
         self.top.destroy()
 
 
 def main():
     app = App()
-    if not app.cfg.api_key:
+    need_setup = False
+    backend = app.cfg.translation_backend
+    if backend == "baidu":
+        if not app.cfg.baidu_appid or not app.cfg.baidu_secret:
+            need_setup = True
+    elif backend == "llm+baidu":
+        if not app.cfg.api_key or not app.cfg.baidu_appid or not app.cfg.baidu_secret:
+            need_setup = True
+    else:
+        if not app.cfg.api_key:
+            need_setup = True
+
+    if need_setup:
         app.overlay.root.after(500, app._open_settings)
     else:
         app.overlay.root.after(500, app._startup_check)

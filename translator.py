@@ -1,9 +1,11 @@
 """
-LLM translation client - OpenAI-compatible API (/v1/chat/completions).
-Batch mode: collects messages within a short window, sends them as one request.
+Translation clients - LLM API + Baidu Translate API.
+Batch mode (LLM only): collects messages within a short window, sends them as one request.
 LRU cache: avoids re-translating identical strings.
 """
+import hashlib
 import json
+import random
 import re
 import threading
 import time
@@ -106,6 +108,14 @@ class Translator(threading.Thread):
         if not batch:
             return
         self.stats["translated"] += len(batch)
+        if self.cfg.translation_backend == "baidu":
+            self._flush_baidu(batch)
+        elif self.cfg.translation_backend == "llm+baidu":
+            self._flush_hybrid(batch)
+        else:
+            self._flush_llm(batch)
+
+    def _flush_llm(self, batch):
         try:
             if len(batch) == 1:
                 text = batch[0].text
@@ -124,6 +134,56 @@ class Translator(threading.Thread):
             err_msg = self._format_error(e)
             for msg in batch:
                 self.out_queue.put((msg, err_msg))
+
+    def _flush_baidu(self, batch):
+        for msg in batch:
+            try:
+                translated = translate_via_baidu(
+                    self.cfg.baidu_appid, self.cfg.baidu_secret, msg.text
+                )
+                self._cache.put(msg.text, translated)
+                self.out_queue.put((msg, translated))
+            except Exception as e:
+                self.out_queue.put((msg, f"[百度翻译失败] {e}"))
+
+    def _flush_hybrid(self, batch):
+        """LLM translates first, Baidu verifies and overrides if different."""
+        # Step 1: get LLM translations (reuse batch logic)
+        llm_results = {}  # text -> translation
+        try:
+            if len(batch) == 1:
+                text = batch[0].text
+                llm_results[text] = self._call_api(text)
+            else:
+                combined = BATCH_SEPARATOR.join(m.text for m in batch)
+                result = self._call_api(combined)
+                parts = [p.strip() for p in result.split(BATCH_SEPARATOR)]
+                for i, msg in enumerate(batch):
+                    llm_results[msg.text] = parts[i] if i < len(parts) else msg.text
+        except Exception as e:
+            err_msg = self._format_error(e)
+            for msg in batch:
+                self.out_queue.put((msg, err_msg))
+            return
+
+        # Step 2: get Baidu translations and compare
+        for msg in batch:
+            llm_trans = llm_results.get(msg.text, msg.text)
+            try:
+                baidu_trans = translate_via_baidu(
+                    self.cfg.baidu_appid, self.cfg.baidu_secret, msg.text
+                )
+                if _translations_differ(llm_trans, baidu_trans):
+                    # Baidu overrides LLM
+                    self._cache.put(msg.text, baidu_trans)
+                    self.out_queue.put((msg, baidu_trans, True))
+                else:
+                    self._cache.put(msg.text, llm_trans)
+                    self.out_queue.put((msg, llm_trans))
+            except Exception:
+                # Baidu failed, fall back to LLM
+                self._cache.put(msg.text, llm_trans)
+                self.out_queue.put((msg, llm_trans))
 
     def _call_api(self, text: str) -> str:
         if self._should_skip(text):
@@ -365,6 +425,10 @@ SEND_SYSTEM_PROMPT = (
 def translate_to_english(cfg: AppConfig, text: str) -> str:
     """Translate Chinese text to English for sending in chat.
     Returns the translated text, or raises an exception on error."""
+    if cfg.translation_backend == "baidu":
+        return translate_to_english_via_baidu(cfg.baidu_appid, cfg.baidu_secret, text)
+
+    # LLM translation (used by both "llm" and "llm+baidu" backends)
     endpoint = cfg.api_endpoint.strip()
     if not endpoint.startswith(("http://", "https://")):
         endpoint = "https://" + endpoint
@@ -385,7 +449,67 @@ def translate_to_english(cfg: AppConfig, text: str) -> str:
     resp = httpx.post(endpoint, json=payload, headers=headers, timeout=30.0)
     resp.raise_for_status()
     data = resp.json()
-    return data["choices"][0]["message"]["content"].strip()
+    llm_result = data["choices"][0]["message"]["content"].strip()
+
+    # Hybrid mode: Baidu verifies and overrides if different
+    if cfg.translation_backend == "llm+baidu" and cfg.baidu_appid and cfg.baidu_secret:
+        try:
+            baidu_result = translate_to_english_via_baidu(cfg.baidu_appid, cfg.baidu_secret, text)
+            if _translations_differ(llm_result, baidu_result):
+                return baidu_result
+        except Exception:
+            pass
+
+    return llm_result
+
+
+def translate_via_baidu(appid: str, secret: str, text: str, to_lang: str = "zh") -> str:
+    """Translate text using Baidu Translate API.
+    https://fanyi-api.baidu.com/api/trans/vip/translate
+    """
+    endpoint = "https://fanyi-api.baidu.com/api/trans/vip/translate"
+    salt = str(random.randint(10000, 99999))
+    sign_str = appid + text + salt + secret
+    sign = hashlib.md5(sign_str.encode()).hexdigest()
+
+    params = {
+        "q": text,
+        "from": "auto",
+        "to": to_lang,
+        "appid": appid,
+        "salt": salt,
+        "sign": sign,
+    }
+    resp = httpx.get(endpoint, params=params, timeout=15.0)
+    resp.raise_for_status()
+    data = resp.json()
+    if "error_code" in data:
+        err_msg = data.get("error_msg", data["error_code"])
+        raise Exception(f"百度翻译错误 {data['error_code']}: {err_msg}")
+    return data["trans_result"][0]["dst"]
+
+
+def translate_to_english_via_baidu(appid: str, secret: str, text: str) -> str:
+    """Translate Chinese text to English via Baidu API."""
+    return translate_via_baidu(appid, secret, text, to_lang="en")
+
+
+def _translations_differ(a: str, b: str) -> bool:
+    """Check if two translations are meaningfully different (not just punctuation)."""
+    a_norm = a.strip().lower().rstrip(".!?;:。！？；：…\"'\"")
+    b_norm = b.strip().lower().rstrip(".!?;:。！？；：…\"'\"")
+    return a_norm != b_norm
+
+
+def test_baidu_connection(appid: str, secret: str) -> tuple:
+    """Test Baidu API connectivity with a minimal request. Returns (success, message)."""
+    if not appid or not secret:
+        return False, "请填写百度翻译 APP ID 和密钥"
+    try:
+        result = translate_via_baidu(appid, secret, "Hello")
+        return True, f"连通成功 — {result[:60]}"
+    except Exception as e:
+        return False, f"连通失败: {e}"
 
 
 def _parse_api_error(response) -> str:

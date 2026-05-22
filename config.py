@@ -9,7 +9,7 @@ import tempfile
 import winreg
 from dataclasses import dataclass, asdict
 
-VERSION = "v1.0.7"
+VERSION = "v1.0.8"
 
 
 def get_documents_path():
@@ -200,6 +200,9 @@ class AppConfig:
     paste_hotkey: str = "ctrl+v" # hotkey to paste (Ctrl+V) into game
     enter_hotkey: str = "enter"  # hotkey to press Enter in game
     send_hotkey: str = "shift+y" # global hotkey to focus translator input
+    translation_backend: str = "llm"  # "llm" or "baidu"
+    baidu_appid: str = ""   # Baidu Translate APP ID
+    baidu_secret: str = ""  # Baidu Translate secret key
 
 
 def ensure_config_dir():

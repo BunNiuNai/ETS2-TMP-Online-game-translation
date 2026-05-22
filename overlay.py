@@ -90,13 +90,27 @@ class OverlayWindow:
 
         # Pack BOTTOM elements FIRST to reserve their space
 
-        # Stats bar (packed first, gets reserved space at bottom)
-        self.stats_label = tk.Label(
-            self.outer, text="", bg="#0f0f0f", fg="#555555",
-            font=("Microsoft YaHei", 8), anchor=tk.W, padx=6,
-            height=2,
-        )
-        self.stats_label.pack(side=tk.BOTTOM, fill=tk.X)
+        # Stats bar — multi-label for mixed colors
+        self.stats_frame = tk.Frame(self.outer, bg="#0f0f0f", height=28)
+        self.stats_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.stats_frame.pack_propagate(False)
+
+        def _make_stat(parent, label_text):
+            """Create a (label, number) pair in a sub-frame."""
+            f = tk.Frame(parent, bg="#0f0f0f")
+            f.pack(side=tk.LEFT, padx=6)
+            lb = tk.Label(f, text=label_text, bg="#0f0f0f", fg="#cccccc",
+                          font=("Microsoft YaHei", 9))
+            lb.pack(side=tk.LEFT)
+            num = tk.Label(f, text="0", bg="#0f0f0f", fg="#f44747",
+                           font=("Microsoft YaHei", 9, "bold"))
+            num.pack(side=tk.LEFT)
+            return num
+
+        self._stat_translated = _make_stat(self.stats_frame, "已翻译: ")
+        self._stat_cached = _make_stat(self.stats_frame, "缓存命中: ")
+        self._stat_self = _make_stat(self.stats_frame, "跳过(自己): ")
+        self._stat_saved = _make_stat(self.stats_frame, "节省: ")
 
         # Input area (packed second, auto-sizes to fit children)
         self.input_frame = tk.Frame(self.outer, bg=BG)
@@ -190,6 +204,8 @@ class OverlayWindow:
         self.text.tag_configure("translation", foreground="#dcdcaa")
         self.text.tag_configure("self_prefix", foreground="#4ec9b0")
         self.text.tag_configure("error", foreground="#f44747")
+        self.text.tag_configure("baidu_fix", foreground="#f44747",
+                                font=("Microsoft YaHei", self.cfg.font_size, "bold"))
         self.text.tag_configure("sent_prefix", foreground="#4ec9b0",
                                 font=("Microsoft YaHei", self.cfg.font_size, "bold"))
         self.text.tag_configure("sent_arrow", foreground="#5a8a5a")
@@ -200,6 +216,7 @@ class OverlayWindow:
         self.ctx_menu = tk.Menu(self.root, tearoff=0, bg="#222222", fg=FG)
         self.ctx_menu.add_command(label="Settings / 设置", command=self._on_settings)
         self.ctx_menu.add_command(label="Switch Mode / 切换模式", command=self._toggle_mode)
+        self.ctx_menu.add_command(label="Check Updates / 检查更新", command=self._on_check_update)
         self.ctx_menu.add_separator()
         self.ctx_menu.add_command(label="Hide / 隐藏", command=self.hide)
         self.ctx_menu.add_command(label="Exit / 退出", command=self._on_exit)
@@ -209,6 +226,7 @@ class OverlayWindow:
         self._settings_cb = None
         self._switch_mode_cb = None
         self._exit_cb = None
+        self._check_update_cb = None
 
     def _restore_or_center(self):
         """Restore saved window position or center on screen."""
@@ -321,6 +339,10 @@ class OverlayWindow:
         if self._exit_cb:
             self._exit_cb()
 
+    def _on_check_update(self):
+        if self._check_update_cb:
+            self._check_update_cb()
+
     # ----- mouse handling for borderless resize & drag (overlay mode) -----
     BORDER = 8
     MIN_W, MIN_H = 280, 250
@@ -396,6 +418,20 @@ class OverlayWindow:
             self._schedule_save_position()
 
     # ----- message handling -----
+    def _update_last_sys_msg(self, new_translated: str):
+        """Update the translated text of the last message — used for download progress."""
+        if self._messages:
+            last = self._messages[-1]
+            self._messages[-1] = (last[0], last[1], new_translated, last[3])
+        # Force redraw
+        self._displayed_count = 0
+        self.text.configure(state=tk.NORMAL)
+        self.text.delete("1.0", tk.END)
+        if self._is_overlay:
+            self.text.insert(tk.END, " ◢", self._grip_tag)
+        self.text.configure(state=tk.DISABLED)
+        self._sync_display()
+
     def add_message(self, player_name: str, original: str, translated: str, is_self: bool = False):
         self._messages.append((player_name, original, translated, is_self))
         if len(self._messages) > self.cfg.max_messages:
@@ -452,7 +488,12 @@ class OverlayWindow:
         tags.append(("original", f"{orig}"))
         if trans != orig:
             tags.append(("arrow", " → "))
-            tag = "error" if trans.startswith("[") else "translation"
+            if trans.startswith("[百度优化]"):
+                tag = "baidu_fix"
+            elif trans.startswith("["):
+                tag = "error"
+            else:
+                tag = "translation"
             tags.append((tag, trans))
         tags.append((None, "\n"))
         # White separator line under each message
@@ -468,14 +509,32 @@ class OverlayWindow:
         while True:
             try:
                 item = self.queue.get_nowait()
-                if isinstance(item, tuple) and len(item) == 2:
-                    msg, translated = item
+                if isinstance(item, tuple) and len(item) >= 2:
+                    msg, translated = item[0], item[1]
+                    baidu_fixed = len(item) >= 3 and item[2]
+                    if baidu_fixed:
+                        translated = f"[百度优化] {translated}"
                     self.add_message(msg.player_name, msg.text, translated, msg.is_self)
                     self.root.deiconify()
+                    if baidu_fixed:
+                        self._show_baidu_correction()
             except Empty:
                 break
         self._update_stats()
         self.root.after(250, self.poll_messages)
+
+    def _show_baidu_correction(self):
+        """Flash a brief notification that Baidu is optimizing the translation."""
+        note = tk.Label(
+            self.outer, text=" 百度翻译正在优化翻译 ",
+            bg="#f44747", fg="#ffffff",
+            font=("Microsoft YaHei", 11, "bold"),
+            padx=14, pady=5,
+        )
+        note.place(relx=0.5, rely=0.03, anchor=tk.N)
+        note.lift()
+        # Fade away after 3 seconds
+        self.root.after(3000, note.destroy)
 
     def _update_stats(self):
         if not self.stats_ref:
@@ -484,13 +543,11 @@ class OverlayWindow:
         c = self.stats_ref.get("cached", 0)
         s = self.stats_ref.get("self", 0)
         total = t + c + s
-        if total == 0:
-            self.stats_label.config(text="  已翻译: 0  |  缓存命中: 0  |  跳过(自己): 0  |  节省: 0%")
-            return
-        saved = int((c + s) / total * 100) if total > 0 else 0
-        self.stats_label.config(
-            text=f"  已翻译: {t}  |  缓存命中: {c}  |  跳过(自己): {s}  |  节省: {saved}%"
-        )
+        saved = f"{int((c + s) / total * 100)}%" if total > 0 else "0%"
+        self._stat_translated.config(text=str(t))
+        self._stat_cached.config(text=str(c))
+        self._stat_self.config(text=str(s))
+        self._stat_saved.config(text=saved)
 
     # ----- global hotkey (polling-based, no WNDPROC hook needed) -----
     def _format_hotkey(self, raw: str) -> str:
@@ -535,7 +592,7 @@ class OverlayWindow:
             # High bit = key currently held down
             def held(vk_code): return ctypes.windll.user32.GetAsyncKeyState(vk_code) & 0x8000
 
-            was_down = False
+            was_down = all(held(mv) for mv in mod_vks) and held(vk)
             while getattr(self, '_hotkey_active', False):
                 # All required modifiers must be held
                 mods_ok = all(held(mv) for mv in mod_vks) if mod_vks else True
@@ -698,7 +755,8 @@ class OverlayWindow:
             mv = self._mod_vks(mods)
             return all(held(mv) for mv in mv) and held(vk)
 
-        was_copy = was_enter = False
+        was_copy = check(copy_mods, copy_vk)
+        was_enter = check(enter_mods, enter_vk)
 
         def poller():
             nonlocal was_copy, was_enter
