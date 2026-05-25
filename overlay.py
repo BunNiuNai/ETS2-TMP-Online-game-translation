@@ -256,22 +256,20 @@ class OverlayWindow:
             self.root.geometry(f"{w}x{h}+{x}+{y}")
 
     def _save_position(self):
-        """Save window position and size to config (debounced)."""
+        """Save window position and size to config."""
         if self.root.state() == "withdrawn":
             return
         try:
-            g = self.root.geometry()
-            # Parse "WxH+X+Y"
-            size, x, y = g.replace("x", " ").replace("+", " ").split()
-            self.cfg.win_w = int(size.split()[0]) if " " not in size else int(size.split()[0])
-            w, x_part = g.split("+", 1)
-            self.cfg.win_w, self.cfg.win_h = (int(v) for v in w.split("x"))
-            parts = g.replace("x", "+").split("+")
-            self.cfg.win_w = int(parts[0])
-            self.cfg.win_h = int(parts[1])
-            self.cfg.win_x = int(parts[2])
-            self.cfg.win_y = int(parts[3])
-        except (ValueError, IndexError):
+            g = self.root.winfo_geometry()
+            # winfo_geometry is more reliable: "WxH+X+Y"
+            import re
+            m = re.match(r"(\d+)x(\d+)([+-]\d+)([+-]\d+)", g)
+            if m:
+                self.cfg.win_w = int(m.group(1))
+                self.cfg.win_h = int(m.group(2))
+                self.cfg.win_x = int(m.group(3))
+                self.cfg.win_y = int(m.group(4))
+        except (ValueError, IndexError, AttributeError):
             return
 
     def _schedule_save_position(self):

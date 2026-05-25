@@ -1,7 +1,7 @@
 # 🚛 ETS2 Chat Translator · 欧卡聊天翻译器
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v1.0.9-brightgreen?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-v1.1.0-brightgreen?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python" alt="Python">
@@ -62,7 +62,9 @@
 | 🔌 | **Connectivity Test**<br><sub>连通性测试</sub> | One-click API connection test in settings; hybrid mode tests both LLM + Baidu<br><sub>设置中一键测试 API 连接，混合模式同时检测 LLM + 百度</sub> |
 | 🪟 | **Dual Window Mode**<br><sub>双窗口模式</sub> | Standard window / borderless overlay; overlay supports click-through and edge-resize<br><sub>标准窗口 / 无边框悬浮窗口，悬浮模式支持鼠标穿透和边缘拖拽缩放</sub> |
 | 📊 | **API Usage Stats**<br><sub>API 用量统计</sub> | Real-time display: translations, cache hits, skipped messages, and savings percentage<br><sub>窗口底部实时显示翻译次数、缓存命中、跳过次数和节省百分比</sub> |
-| 📍 | **Window Position Memory**<br><sub>窗口位置记忆</sub> | Automatically saves and restores window position and size<br><sub>自动保存和恢复窗口位置与大小</sub> |
+| 📍 | **Window Position Memory**<br><sub>窗口位置记忆</sub> | Automatically saves and restores overlay & settings window position and size<br><sub>自动保存和恢复悬浮窗和设置窗口的位置与大小</sub> |
+| 🎨 | **Dark Theme Settings**<br><sub>暗色主题设置</sub> | Polished dark-themed settings dialog, consistent with the overlay window<br><sub>全新暗色主题设置界面，与悬浮窗风格统一</sub> |
+| 🔄 | **Chat Deduplication**<br><sub>聊天去重</sub> | Prevents duplicate display of the same chat message (player + text + timestamp)<br><sub>防止同一条聊天消息重复显示（玩家+内容+时间戳去重）</sub> |
 | ✂️ | **Message Separators**<br><sub>消息分割线</sub> | White horizontal line under each message for quick visual separation<br><sub>每条翻译消息下方显示白色横线分隔，便于快速区分</sub> |
 | ⌨️ | **Global Hotkey**<br><sub>全局热键</sub> | Customizable key combo (e.g. Shift+Y) to summon the translator input from in-game<br><sub>可自定义组合键（如 Shift+Y）从游戏内呼出翻译器输入栏</sub> |
 | 📋 | **System Tray**<br><sub>系统托盘</sub> | Win32 tray icon with right-click quick actions (show/hide, mode switch, click-through, etc.)<br><sub>Win32 托盘图标，右键菜单快捷操作（显示/隐藏、切换模式、鼠标穿透等）</sub> |
@@ -436,8 +438,8 @@ Updates are auto-checked on startup. When a new version is found, right-click me
 
 <details>
 <summary><b>Font size changes don't take effect immediately?<br>调整字体大小后没有立即生效？</b></summary>
-As of v1.0.9, font size changes apply instantly when you save settings — no restart needed.<br>
-从 v1.0.9 开始，字体大小调整保存后即时生效，无需重启。
+As of v1.0.9, font size changes apply instantly when you save settings — no restart needed. As of v1.1.0, the settings dialog uses a dark theme and remembers its window size.<br>
+从 v1.0.9 开始，字体大小调整保存后即时生效，无需重启。从 v1.1.0 开始，设置界面采用暗色主题并记忆窗口尺寸。
 </details>
 
 ---

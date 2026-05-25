@@ -9,7 +9,7 @@ import tempfile
 import winreg
 from dataclasses import dataclass, asdict
 
-VERSION = "v1.0.9"
+VERSION = "v1.1.0"
 
 
 def get_documents_path():
@@ -195,6 +195,8 @@ class AppConfig:
     win_y: int = -1  # saved window y
     win_w: int = 620  # saved window width
     win_h: int = 360  # saved window height
+    settings_win_w: int = 540  # settings dialog width
+    settings_win_h: int = 700  # settings dialog height
     chat_hotkey: str = "y"      # hotkey to open in-game chat window
     copy_hotkey: str = "ctrl+c"  # hotkey to copy translated text to clipboard
     paste_hotkey: str = "ctrl+v" # hotkey to paste (Ctrl+V) into game

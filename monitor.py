@@ -115,6 +115,7 @@ class ChatMonitor(threading.Thread):
         self._log_path = None
         self._last_size = 0
         self.status = "未启动"
+        self._seen = set()  # deduplication: hashes of recently seen messages
 
     @property
     def _self_name(self) -> str | None:
@@ -129,6 +130,7 @@ class ChatMonitor(threading.Thread):
             old = os.path.basename(self._log_path) if self._log_path else "None"
             self._log_path = latest
             self._last_size = os.path.getsize(latest)
+            self._seen.clear()
             self.status = f"已切换日志: {os.path.basename(latest)} (旧: {old})"
             return True
         return False
@@ -175,6 +177,13 @@ class ChatMonitor(threading.Thread):
                 msg = parse_line(line, self_name)
                 if msg is None:
                     continue
+                # Deduplicate by (player, text, timestamp) hash
+                key = (msg.player_name, msg.text, msg.timestamp)
+                if key in self._seen:
+                    continue
+                self._seen.add(key)
+                if len(self._seen) > 500:
+                    self._seen.clear()  # periodic cleanup to avoid unbounded growth
                 self.queue.put(msg)
         except OSError:
             pass
